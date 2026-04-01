@@ -21,7 +21,7 @@ attacker:
 # --- Judge model (evaluates target responses) ---
 judge:
   provider: ollama
-  model: deepseek-r1:8b
+  model: deepseek-r1:14b
   base_url: http://localhost:11434
   temperature: 0.0                # Deterministic scoring
   max_tokens: 1024                # deepseek-r1 needs more tokens for <think> reasoning
@@ -45,6 +45,22 @@ strategies:
     params:
       max_rounds: 5
       ascii_font: banner3         # pyfiglet font
+
+  - name: hybrid
+    enabled: true                    # Crescendo + ManyShot + ArtPrompt deep fusion
+    params:
+      max_rounds: 15                  # More rounds — multi-technique needs room
+      escalation_steps: 5
+      enable_many_shot: true          # ICL flooding prefix per round
+      enable_art_prompt: true         # ASCII art keyword evasion
+      art_prompt_after_round: 3       # Don't use ASCII art in first N rounds
+      art_prompt_probability: 0.5     # Probability of art in non-aggressive phases
+      ascii_font: banner3
+      crescendo_params:
+        max_rounds: 15
+        escalation_steps: 5
+      many_shot_params:
+        shot_counts: [5, 10, 20, 30]
 
   - name: iterative_crescendo
     enabled: false                    # Enable when you want the full meta-learning loop

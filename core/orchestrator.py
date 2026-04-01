@@ -12,11 +12,13 @@ from utils.rich_compat import Console, Table, Progress, SpinnerColumn, TextColum
 
 from core.target import TargetModel, AttackerModel
 from core.judge import Judge
+from core.memory_bank import MemoryBankManager
 from strategies.base import BaseStrategy, AttackRound, StrategyResult
 from strategies.crescendo import CrescendoStrategy
 from strategies.many_shot import ManyShotStrategy
 from strategies.art_prompt import ArtPromptStrategy
 from strategies.iterative_crescendo import IterativeCrescendoStrategy
+from strategies.hybrid import HybridStrategy
 
 
 console = Console()
@@ -26,6 +28,7 @@ STRATEGY_MAP = {
     "many_shot": ManyShotStrategy,
     "art_prompt": ArtPromptStrategy,
     "iterative_crescendo": IterativeCrescendoStrategy,
+    "hybrid": HybridStrategy,
 }
 
 
@@ -64,6 +67,13 @@ class Orchestrator:
         self.categories = config.get("test_categories", [])
         self.scoring_config = config.get("scoring", {})
 
+        # Long-term memory bank for cross-session learning
+        memory_path = config.get("memory", {}).get("path", "memory_bank.json")
+        self.memory_bank = MemoryBankManager(path=memory_path)
+        n_memories = len(self.memory_bank.entries)
+        if n_memories > 0:
+            console.print(f"[dim]Loaded {n_memories} lessons from memory bank[/dim]")
+
         # Results
         self.results: list[StrategyResult] = []
 
@@ -94,18 +104,45 @@ class Orchestrator:
                     f"Category: {category['id']} — {category['description']}"
                 )
 
+                # Fresh attacker per category — prevents cross-category memory bleed
+                # (e.g., misinformation tactics leaking into social_engineering)
+                fresh_attacker = AttackerModel(self.config["attacker"])
+                console.print(
+                    f"    [dim]Fresh attacker for {category['id']}[/dim]"
+                )
+
+                # Reset strategy state between categories to prevent phase leakage
+                # (e.g., extract phase from misinformation forcing policy_violation to extract)
+                if hasattr(strategy, 'reset_state'):
+                    strategy.reset_state()
+                elif hasattr(strategy, '_crescendo') and hasattr(strategy._crescendo, 'reset_state'):
+                    strategy._crescendo.reset_state()
+
+                # Inject long-term memory into strategy (if it supports it)
+                memory_context = self.memory_bank.format_for_attacker(
+                    category['id']
+                )
+                if hasattr(strategy, 'set_memory_context'):
+                    strategy.set_memory_context(memory_context)
+                if memory_context:
+                    console.print(
+                        f"    [dim]Injected {len(self.memory_bank.get_lessons_for_category(category['id']))} "
+                        f"category lessons from memory bank[/dim]"
+                    )
+
                 # Check if this is an iterative strategy (handles its own loop)
                 if getattr(strategy, 'is_iterative', False):
                     result = strategy.run_iterative(
                         category=category,
                         target_model=self.target,
-                        attacker_model=self.attacker,
+                        attacker_model=fresh_attacker,
                         judge=self.judge,
                         scoring_config=self.scoring_config,
                         console=console,
                     )
                 else:
-                    result = self._run_single(strategy, category)
+                    result = self._run_single(strategy, category,
+                                              attacker_override=fresh_attacker)
                 self.results.append(result)
 
                 # Print result
@@ -116,16 +153,36 @@ class Orchestrator:
                     f"Rounds: {result.rounds_taken}/{result.max_rounds}"
                 )
 
+                # Post-run: analyze and store lesson in memory bank
+                if result.rounds:
+                    try:
+                        entry = self.memory_bank.analyze_and_store(
+                            result=result,
+                            category=category,
+                            judge_model=self.judge.model,
+                            attacker_model=fresh_attacker,
+                        )
+                        console.print(
+                            f"    [dim]Memory bank: stored lesson — "
+                            f"\"{entry.key_insight[:80]}\"[/dim]"
+                        )
+                    except Exception as e:
+                        console.print(
+                            f"    [yellow]Memory bank analysis failed: {e}[/yellow]"
+                        )
+
         self._print_summary()
         return self.results
 
     def _run_single(
-        self, strategy: BaseStrategy, category: dict
+        self, strategy: BaseStrategy, category: dict,
+        attacker_override: Optional[AttackerModel] = None,
     ) -> StrategyResult:
         """
         Run one strategy against one category.
         This is the core attack loop.
         """
+        attacker = attacker_override or self.attacker
         rounds: list[AttackRound] = []
         current_round = 0
         judge_feedback: Optional[str] = None
@@ -147,7 +204,7 @@ class Orchestrator:
                         category=category,
                         conversation_history=rounds,
                         judge_feedback=judge_feedback,
-                        attacker_model=self.attacker,
+                        attacker_model=attacker,
                     )
                     if prompt and not prompt.startswith("[ERROR]"):
                         break

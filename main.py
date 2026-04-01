@@ -87,7 +87,7 @@ def main():
     )
     parser.add_argument(
         "--strategy",
-        choices=["crescendo", "many_shot", "art_prompt", "iterative_crescendo"],
+        choices=["crescendo", "many_shot", "art_prompt", "iterative_crescendo", "hybrid"],
         help="Run only a specific strategy",
     )
     parser.add_argument(
