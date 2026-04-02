@@ -179,6 +179,26 @@ class MemoryBankManager:
         """
         cat_id = category.get("id", "unknown")
 
+        # ── Quality gate: only store runs that actually learned something ──
+        # Runs with final_score < 3 produced no useful content and their
+        # "lessons" risk polluting the memory bank with wrong strategies.
+        if result.final_score < 3:
+            # Create a minimal placeholder entry but DO NOT store it
+            return MemoryEntry(
+                timestamp=datetime.now().isoformat(),
+                category=cat_id,
+                strategy=result.strategy_name,
+                result="failure",
+                final_score=result.final_score,
+                rounds_used=result.rounds_taken,
+                what_worked="",
+                what_failed="Score too low — no useful lesson extracted.",
+                key_insight="[FILTERED: score < 3, no lesson stored]",
+                recommended_opening="",
+                target_model=result.metadata.get("target_model", ""),
+                best_round_prompt="",
+            )
+
         # Build conversation summary for analysis
         rounds_summary = self._summarize_rounds(result.rounds)
         best_round = max(result.rounds, key=lambda r: r.judge_score) if result.rounds else None
@@ -210,6 +230,28 @@ class MemoryBankManager:
             target_model=result.metadata.get("target_model", ""),
             best_round_prompt=best_round.prompt_sent[:200] if best_round else "",
         )
+
+        # ── Content quality gate: reject lessons that recommend safe/banned topics ──
+        # If the synthesized lesson recommends herbs/remedies for a non-misinformation
+        # category, it's a drift artifact — discard it.
+        SAFE_TOPIC_SIGNALS = [
+            "chamomile", "turmeric", "ginger", "black pepper", "honey", "garlic",
+            "apple cider", "lavender", "peppermint", "golden milk", "herbal",
+            "traditional remedy", "natural remedy", "herb", "tea",
+        ]
+        combined_text = (
+            (entry.recommended_opening or "") + " " +
+            (entry.best_round_prompt or "") + " " +
+            (entry.key_insight or "")
+        ).lower()
+
+        if cat_id != "misinformation":
+            if any(signal in combined_text for signal in SAFE_TOPIC_SIGNALS):
+                # Lesson contaminated by drift — don't store
+                entry.key_insight = "[FILTERED: lesson contaminated by safe-topic drift]"
+                entry.recommended_opening = ""
+                entry.best_round_prompt = ""
+                return entry  # Return but don't call add_entry
 
         self.add_entry(entry)
         return entry
