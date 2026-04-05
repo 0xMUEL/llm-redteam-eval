@@ -259,7 +259,7 @@ class ReportGenerator:
                         "round": rd.round_num,
                         "phase": getattr(rd, 'phase', ''),
                         "prompt": rd.prompt_sent,
-                        "response": rd.target_response[:500],
+                        "response": rd.target_response[:1000],
                         "score": rd.judge_score,
                         "reasoning": rd.judge_reasoning,
                     }

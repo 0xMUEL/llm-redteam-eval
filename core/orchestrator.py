@@ -5,6 +5,9 @@ target query → judge evaluation → feedback → repeat.
 """
 
 import time
+import json
+import datetime
+import os
 from enum import Enum
 from typing import Optional
 
@@ -77,12 +80,23 @@ class Orchestrator:
         # Results
         self.results: list[StrategyResult] = []
 
+        # ── Live dashboard state ──
+        self._live_state_path = "live_state.json"
+        self._completed_runs: list[dict] = []   # serialized completed tasks
+        self._eval_id: str = ""
+        self._total_tasks: int = 0
+        self._current_task_num: int = 0
+
     def run(self) -> list[StrategyResult]:
         """
         Run the complete evaluation.
         Iterates: for each strategy × each category → run attack loop.
         """
         total_tasks = len(self.strategies) * len(self.categories)
+        self._total_tasks = total_tasks
+        self._eval_id = datetime.datetime.now().strftime("eval_%Y%m%d_%H%M%S")
+        self._completed_runs = []
+        self._current_task_num = 0
 
         console.print(Panel(
             f"[bold]LLM Robustness Evaluation[/bold]\n"
@@ -99,6 +113,7 @@ class Orchestrator:
 
             for category in self.categories:
                 task_num += 1
+                self._current_task_num = task_num
                 console.print(
                     f"  [{task_num}/{total_tasks}] "
                     f"Category: {category['id']} — {category['description']}"
@@ -145,6 +160,10 @@ class Orchestrator:
                                               attacker_override=fresh_attacker)
                 self.results.append(result)
 
+                # Move completed task to dashboard's completed list
+                self._completed_runs.append(self._serialize_result(result))
+                self._write_live_state(current=None)  # no running task now
+
                 # Print result
                 status = "[green]SUCCESS[/green]" if result.success else "[red]FAILED[/red]"
                 console.print(
@@ -172,6 +191,27 @@ class Orchestrator:
                         )
 
         self._print_summary()
+
+        # Write final completed state for dashboard
+        state = {
+            "eval_id": self._eval_id,
+            "status": "completed",
+            "target_model": self.config["target"]["model"],
+            "attacker_model": self.config["attacker"]["model"],
+            "total_tasks": self._total_tasks,
+            "completed_tasks": len(self._completed_runs),
+            "completed": self._completed_runs,
+            "current": None,
+            "updated_at": datetime.datetime.now().isoformat(),
+        }
+        try:
+            tmp = self._live_state_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(state, f, indent=2)
+            os.replace(tmp, self._live_state_path)
+        except Exception:
+            pass
+
         return self.results
 
     def _run_single(
@@ -249,6 +289,14 @@ class Orchestrator:
                 phase=current_phase,
             )
             rounds.append(attack_round)
+
+            # ── Live dashboard: write state after every round ──
+            self._write_live_state(current={
+                "strategy": strategy.name,
+                "category": category["id"],
+                "category_description": category.get("description", ""),
+                "rounds": [self._serialize_round(r) for r in rounds],
+            })
 
             state = RunState.FEEDBACK
 
@@ -374,6 +422,53 @@ class Orchestrator:
                 "attacker_model": self.config["attacker"]["model"],
             },
         )
+
+    def _serialize_round(self, r: AttackRound) -> dict:
+        """Serialize an AttackRound for the live state JSON."""
+        return {
+            "round_num": r.round_num,
+            "phase": r.phase,
+            "prompt": r.prompt_sent,
+            "response": r.target_response,
+            "judge_score": r.judge_score,
+            "judge_reasoning": r.judge_reasoning,
+            "latency_ms": round(r.latency_ms) if r.latency_ms else None,
+        }
+
+    def _serialize_result(self, result: StrategyResult) -> dict:
+        """Serialize a StrategyResult for the live state JSON."""
+        rounds = result.rounds or []
+        max_score = max((r.judge_score for r in rounds if r.judge_score is not None), default=result.final_score)
+        return {
+            "strategy": result.strategy_name,
+            "category": result.category_id,
+            "success": result.success,
+            "final_score": result.final_score,
+            "max_score": max_score,
+            "rounds_taken": result.rounds_taken,
+            "rounds": [self._serialize_round(r) for r in rounds],
+        }
+
+    def _write_live_state(self, current: Optional[dict] = None):
+        """Write the current evaluation state to live_state.json for the dashboard."""
+        state = {
+            "eval_id": self._eval_id,
+            "status": "running" if current else "idle",
+            "target_model": self.config["target"]["model"],
+            "attacker_model": self.config["attacker"]["model"],
+            "total_tasks": self._total_tasks,
+            "completed_tasks": len(self._completed_runs),
+            "completed": self._completed_runs,
+            "current": current,
+            "updated_at": datetime.datetime.now().isoformat(),
+        }
+        try:
+            tmp = self._live_state_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(state, f, indent=2)
+            os.replace(tmp, self._live_state_path)  # atomic write
+        except Exception:
+            pass  # Dashboard is non-critical — never crash the eval
 
     def _print_summary(self):
         """Print a nice summary table."""

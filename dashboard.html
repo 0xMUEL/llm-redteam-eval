@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LLM Red Team Dashboard</title>
+  <style>
+    /* ── Reset & base ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d1117;
+      --surface:   #161b22;
+      --surface2:  #1c2128;
+      --border:    #30363d;
+      --text:      #e6edf3;
+      --muted:     #8b949e;
+      --accent:    #58a6ff;
+
+      --attacker:  #f0883e;
+      --target:    #58a6ff;
+      --judge-ok:  #3fb950;
+      --judge-bad: #f85149;
+      --judge-mid: #d29922;
+
+      --phase-warmup:     #388bfd;
+      --phase-elaborate:  #bc8cff;
+      --phase-reformat:   #d29922;
+      --phase-intensify:  #f0883e;
+      --phase-pursue:     #f85149;
+      --phase-extract:    #ff7b72;
+      --phase-reset:      #8b949e;
+    }
+
+    html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; }
+
+    /* ── Layout skeleton ── */
+    body { display: grid; grid-template-rows: 56px 1fr 36px; height: 100vh; overflow: hidden; }
+
+    /* ── Header ── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 16px; padding: 0 20px;
+    }
+    header h1 { font-size: 15px; font-weight: 600; white-space: nowrap; }
+    header h1 span { color: var(--accent); }
+
+    .model-tag {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 20px; padding: 3px 10px; font-size: 12px; color: var(--muted);
+    }
+    .model-tag b { color: var(--text); }
+
+    .progress-wrap {
+      flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0;
+    }
+    .progress-bar-outer {
+      flex: 1; height: 6px; background: var(--border); border-radius: 4px; overflow: hidden;
+    }
+    .progress-bar-inner {
+      height: 100%; width: 0%; background: var(--accent); border-radius: 4px;
+      transition: width 0.5s ease;
+    }
+    .progress-label { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+    /* ── Main area ── */
+    main { display: grid; grid-template-columns: 280px 1fr; overflow: hidden; }
+
+    /* ── Sidebar ── */
+    aside {
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .sidebar-header {
+      padding: 12px 16px; border-bottom: 1px solid var(--border);
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--muted);
+    }
+    .task-list { flex: 1; overflow-y: auto; }
+    .task-item {
+      padding: 10px 14px; border-bottom: 1px solid var(--border);
+      cursor: pointer; transition: background 0.15s;
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .task-item:hover { background: var(--surface2); }
+    .task-item.active { background: rgba(88, 166, 255, 0.08); border-left: 3px solid var(--accent); }
+    .task-item.active { padding-left: 11px; }
+    .task-name { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+    .task-meta { font-size: 11px; color: var(--muted); }
+    .task-score { font-size: 11px; font-weight: 700; margin-left: auto; }
+
+    /* status badges */
+    .badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      border-radius: 20px; padding: 1px 7px; font-size: 10px; font-weight: 700;
+    }
+    .badge-running  { background: rgba(240,136,62,.15); color: var(--attacker); }
+    .badge-success  { background: rgba(63,185,80,.12);  color: var(--judge-ok); }
+    .badge-failed   { background: rgba(248,81,73,.12);  color: var(--judge-bad); }
+    .badge-pending  { background: rgba(139,148,158,.1); color: var(--muted); }
+
+    /* ── Conversation panel ── */
+    #conv-panel {
+      display: flex; flex-direction: column; overflow: hidden; background: var(--bg);
+    }
+    .conv-header {
+      padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+    }
+    .conv-title { font-size: 14px; font-weight: 600; }
+    .conv-subtitle { font-size: 12px; color: var(--muted); }
+    .conv-header .spacer { flex: 1; }
+
+    .rounds-wrap {
+      flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 16px;
+    }
+
+    /* ── Round card ── */
+    .round-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+    }
+    .round-card-header {
+      padding: 8px 14px; background: var(--surface2); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 8px; font-size: 12px;
+    }
+    .round-num { font-weight: 700; color: var(--text); }
+    .phase-badge {
+      border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 700; text-transform: uppercase;
+    }
+    .phase-warmup    { background: rgba(56,139,253,.2);  color: var(--phase-warmup); }
+    .phase-elaborate { background: rgba(188,140,255,.2); color: var(--phase-elaborate); }
+    .phase-reformat  { background: rgba(210,153,34,.2);  color: var(--phase-reformat); }
+    .phase-intensify { background: rgba(240,136,62,.2);  color: var(--phase-intensify); }
+    .phase-pursue    { background: rgba(248,81,73,.2);   color: var(--phase-pursue); }
+    .phase-extract   { background: rgba(255,123,114,.2); color: var(--phase-extract); }
+    .phase-reset     { background: rgba(139,148,158,.2); color: var(--phase-reset); }
+
+    .score-pill {
+      margin-left: auto; border-radius: 20px; padding: 2px 8px;
+      font-size: 11px; font-weight: 700;
+    }
+    .score-low  { background: rgba(63,185,80,.15);  color: var(--judge-ok); }
+    .score-mid  { background: rgba(210,153,34,.15); color: var(--judge-mid); }
+    .score-high { background: rgba(248,81,73,.15);  color: var(--judge-bad); }
+
+    .latency { font-size: 10px; color: var(--muted); }
+
+    .msg-block {
+      padding: 10px 14px; display: flex; gap: 10px;
+    }
+    .msg-block + .msg-block { border-top: 1px solid var(--border); }
+
+    .msg-icon { font-size: 16px; flex-shrink: 0; line-height: 1.4; }
+    .msg-body { flex: 1; min-width: 0; }
+    .msg-role {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.07em; margin-bottom: 4px;
+    }
+    .msg-role.attacker { color: var(--attacker); }
+    .msg-role.target   { color: var(--target); }
+    .msg-role.judge    { color: var(--judge-ok); }
+    .msg-role.judge.bad { color: var(--judge-bad); }
+
+    .msg-text {
+      font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+      color: var(--text);
+    }
+    .msg-text.collapsed {
+      max-height: 120px; overflow: hidden;
+      -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+      mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+    }
+    .expand-btn {
+      margin-top: 6px; font-size: 11px; color: var(--accent);
+      background: none; border: none; cursor: pointer; padding: 0;
+    }
+    .expand-btn:hover { text-decoration: underline; }
+
+    .judge-reasoning {
+      font-size: 11px; color: var(--muted); margin-top: 6px;
+      padding: 6px 8px; background: var(--bg); border-radius: 4px;
+      border-left: 2px solid var(--border);
+      white-space: pre-wrap; word-break: break-word;
+    }
+
+    /* ── Loading spinner (in-progress round) ── */
+    .round-card.loading .round-card-header { animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+    .spinner {
+      width: 14px; height: 14px; border: 2px solid var(--border);
+      border-top-color: var(--accent); border-radius: 50%;
+      animation: spin 0.8s linear infinite; margin-left: auto;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Empty / idle state ── */
+    .empty-state {
+      flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      color: var(--muted); gap: 12px;
+    }
+    .empty-icon { font-size: 48px; }
+    .empty-text { font-size: 14px; }
+
+    /* ── Status bar ── */
+    footer {
+      background: var(--surface); border-top: 1px solid var(--border);
+      display: flex; align-items: center; gap: 16px; padding: 0 16px;
+      font-size: 11px; color: var(--muted);
+    }
+    .status-dot {
+      width: 7px; height: 7px; border-radius: 50%; background: var(--muted);
+    }
+    .status-dot.live { background: var(--judge-ok); animation: blink 1.2s ease-in-out infinite; }
+    .status-dot.running { background: var(--attacker); animation: blink 1.2s ease-in-out infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+    .footer-spacer { flex: 1; }
+
+    /* ── Scrollbar styling ── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<header>
+  <h1>🔴 LLM Red Team <span>Dashboard</span></h1>
+  <span class="model-tag" id="hdr-target"><b>Target:</b> —</span>
+  <span class="model-tag" id="hdr-attacker"><b>Attacker:</b> —</span>
+  <div class="progress-wrap">
+    <div class="progress-bar-outer">
+      <div class="progress-bar-inner" id="progress-bar"></div>
+    </div>
+    <span class="progress-label" id="progress-label">—</span>
+  </div>
+  <span class="model-tag" id="hdr-eval" style="font-size:11px;color:var(--muted)">No eval running</span>
+</header>
+
+<!-- ── Main ── -->
+<main>
+  <!-- Sidebar -->
+  <aside>
+    <div class="sidebar-header">Tasks</div>
+    <div class="task-list" id="task-list">
+      <div class="empty-state" style="padding:24px;text-align:center;font-size:12px;">
+        Waiting for eval to start…
+      </div>
+    </div>
+  </aside>
+
+  <!-- Conversation panel -->
+  <div id="conv-panel">
+    <div class="empty-state" id="empty-state">
+      <div class="empty-icon">⚔️</div>
+      <div class="empty-text">Select a task to view conversation</div>
+    </div>
+
+    <div id="conv-content" style="display:none; flex:1; flex-direction:column; overflow:hidden;">
+      <div class="conv-header" id="conv-header">
+        <div>
+          <div class="conv-title" id="conv-title">—</div>
+          <div class="conv-subtitle" id="conv-subtitle">—</div>
+        </div>
+        <div class="spacer"></div>
+        <span id="conv-badge" class="badge badge-pending">Pending</span>
+      </div>
+      <div class="rounds-wrap" id="rounds-wrap"></div>
+    </div>
+  </div>
+</main>
+
+<!-- ── Status bar ── -->
+<footer>
+  <div class="status-dot" id="status-dot"></div>
+  <span id="status-text">Idle</span>
+  <span id="status-eval"></span>
+  <div class="footer-spacer"></div>
+  <span id="status-updated">—</span>
+</footer>
+
+<script>
+// ============================================================
+// State
+// ============================================================
+let _state = null;          // latest live_state.json
+let _selectedKey = null;    // "strategy:category" currently shown
+let _autoSelect = true;     // auto-follow running task
+
+// ============================================================
+// SSE connection
+// ============================================================
+function connectSSE() {
+  const es = new EventSource('/api/stream');
+
+  es.addEventListener('update', e => {
+    try {
+      const data = JSON.parse(e.data);
+      applyState(data);
+    } catch(err) { console.error('SSE parse error', err); }
+  });
+
+  es.onerror = () => {
+    // On SSE disconnect, poll the REST fallback every 3s
+    es.close();
+    setTimeout(() => {
+      fetchStateFallback();
+      setTimeout(connectSSE, 5000);
+    }, 3000);
+  };
+}
+
+async function fetchStateFallback() {
+  try {
+    const r = await fetch('/api/state');
+    const data = await r.json();
+    applyState(data);
+  } catch(e) {}
+}
+
+// ============================================================
+// State → UI
+// ============================================================
+function applyState(state) {
+  _state = state;
+  updateHeader(state);
+  updateTaskList(state);
+  updateFooter(state);
+
+  // Auto-select: follow the running task
+  if (_autoSelect && state.current) {
+    const key = taskKey(state.current.strategy, state.current.category);
+    if (key !== _selectedKey) {
+      _selectedKey = key;
+    }
+  }
+
+  if (_selectedKey) {
+    renderConversation(_selectedKey, state);
+  }
+}
+
+function taskKey(strategy, category) {
+  return `${strategy}:${category}`;
+}
+
+// ── Header ──────────────────────────────────────────────────
+function updateHeader(state) {
+  document.getElementById('hdr-target').innerHTML =
+    `<b>Target:</b> ${state.target_model || '—'}`;
+  document.getElementById('hdr-attacker').innerHTML =
+    `<b>Attacker:</b> ${state.attacker_model || '—'}`;
+
+  const total = state.total_tasks || 0;
+  const done  = state.completed_tasks || 0;
+  const pct   = total ? Math.round(done / total * 100) : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+  document.getElementById('progress-label').textContent =
+    total ? `${done}/${total}` : '—';
+  document.getElementById('hdr-eval').textContent =
+    state.eval_id ? `eval: ${state.eval_id}` : 'No eval running';
+}
+
+// ── Task list ───────────────────────────────────────────────
+function updateTaskList(state) {
+  const list = document.getElementById('task-list');
+
+  // Build a map: key → { strategy, category, result|null, isCurrent }
+  const tasks = {};
+
+  // Completed results
+  for (const r of (state.completed || [])) {
+    const k = taskKey(r.strategy, r.category);
+    tasks[k] = { strategy: r.strategy, category: r.category, result: r, isCurrent: false };
+  }
+
+  // Current running task
+  if (state.current) {
+    const k = taskKey(state.current.strategy, state.current.category);
+    if (!tasks[k]) {
+      tasks[k] = { strategy: state.current.strategy, category: state.current.category, result: null, isCurrent: true };
+    } else {
+      tasks[k].isCurrent = true;
+    }
+  }
+
+  if (Object.keys(tasks).length === 0) {
+    list.innerHTML = `<div class="empty-state" style="padding:24px;text-align:center;font-size:12px;">Waiting for eval to start…</div>`;
+    return;
+  }
+
+  list.innerHTML = '';
+  for (const [k, t] of Object.entries(tasks)) {
+    const item = document.createElement('div');
+    item.className = 'task-item' + (k === _selectedKey ? ' active' : '');
+    item.onclick = () => { _selectedKey = k; _autoSelect = false; renderConversation(k, _state); highlightTask(k); };
+
+    let badgeHtml = '';
+    let scoreHtml = '';
+    if (t.isCurrent) {
+      badgeHtml = `<span class="badge badge-running">⚡ Running</span>`;
+    } else if (t.result) {
+      const success = t.result.success;
+      badgeHtml = success
+        ? `<span class="badge badge-success">✓ Success</span>`
+        : `<span class="badge badge-failed">✗ Failed</span>`;
+      if (t.result.max_score != null) {
+        const sc = t.result.max_score;
+        const cls = sc >= 8 ? 'score-high' : sc >= 5 ? 'score-mid' : 'score-low';
+        scoreHtml = `<span class="score-pill ${cls}">${sc}</span>`;
+      }
+    } else {
+      badgeHtml = `<span class="badge badge-pending">Pending</span>`;
+    }
+
+    item.innerHTML = `
+      <div class="task-name">
+        ${badgeHtml}
+        ${scoreHtml}
+      </div>
+      <div class="task-meta">
+        <b>${t.strategy}</b> · ${t.category}
+      </div>
+    `;
+    list.appendChild(item);
+  }
+}
+
+function highlightTask(key) {
+  document.querySelectorAll('.task-item').forEach(el => el.classList.remove('active'));
+  // Re-render task list to apply active class properly
+  updateTaskList(_state);
+}
+
+// ── Conversation panel ───────────────────────────────────────
+function renderConversation(key, state) {
+  const emptyEl  = document.getElementById('empty-state');
+  const contentEl = document.getElementById('conv-content');
+
+  // Find data for this key
+  let rounds = [];
+  let taskMeta = null;
+  let status = 'pending';
+  let isCurrent = false;
+
+  // Check completed results
+  for (const r of (state.completed || [])) {
+    if (taskKey(r.strategy, r.category) === key) {
+      rounds = r.rounds || [];
+      taskMeta = r;
+      status = r.success ? 'success' : 'failed';
+      break;
+    }
+  }
+
+  // Overlay current rounds if this is the running task
+  if (state.current && taskKey(state.current.strategy, state.current.category) === key) {
+    rounds = state.current.rounds || [];
+    isCurrent = true;
+    status = 'running';
+  }
+
+  if (!taskMeta && !isCurrent) {
+    emptyEl.style.display = 'flex';
+    contentEl.style.display = 'none';
+    return;
+  }
+
+  emptyEl.style.display = 'none';
+  contentEl.style.display = 'flex';
+
+  // Header
+  const [strategy, category] = key.split(':');
+  document.getElementById('conv-title').textContent = `${strategy} · ${category}`;
+  document.getElementById('conv-subtitle').textContent =
+    taskMeta ? `${rounds.length} rounds · max score ${taskMeta.max_score ?? '—'}` : `${rounds.length} rounds (in progress)`;
+
+  const badge = document.getElementById('conv-badge');
+  badge.className = 'badge';
+  if (status === 'running') { badge.classList.add('badge-running'); badge.textContent = '⚡ Running'; }
+  else if (status === 'success') { badge.classList.add('badge-success'); badge.textContent = '✓ Success'; }
+  else if (status === 'failed') { badge.classList.add('badge-failed'); badge.textContent = '✗ Failed'; }
+  else { badge.classList.add('badge-pending'); badge.textContent = 'Pending'; }
+
+  // Rounds
+  const wrap = document.getElementById('rounds-wrap');
+  const wasAtBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 60;
+
+  wrap.innerHTML = '';
+
+  if (rounds.length === 0) {
+    wrap.innerHTML = `<div style="color:var(--muted);text-align:center;padding:32px">Waiting for first round…</div>`;
+  } else {
+    for (const round of rounds) {
+      wrap.appendChild(buildRoundCard(round));
+    }
+
+    // If currently running, add a loading card for the next round
+    if (isCurrent) {
+      wrap.appendChild(buildLoadingCard(rounds.length + 1));
+    }
+  }
+
+  // Auto-scroll to bottom if we were already at the bottom
+  if (wasAtBottom || isCurrent) {
+    wrap.scrollTop = wrap.scrollHeight;
+  }
+}
+
+function buildRoundCard(round) {
+  const card = document.createElement('div');
+  card.className = 'round-card';
+
+  const score = round.judge_score;
+  const scoreCls = score == null ? '' : score >= 8 ? 'score-high' : score >= 5 ? 'score-mid' : 'score-low';
+  const scoreHtml = score != null
+    ? `<span class="score-pill ${scoreCls}">Score: ${score}</span>`
+    : '';
+  const latencyHtml = round.latency_ms
+    ? `<span class="latency">${(round.latency_ms/1000).toFixed(1)}s</span>`
+    : '';
+
+  const phase = (round.phase || 'unknown').toLowerCase();
+  const phaseClass = `phase-${phase}`;
+
+  card.innerHTML = `
+    <div class="round-card-header">
+      <span class="round-num">Round ${round.round_num}</span>
+      <span class="phase-badge ${phaseClass}">${phase}</span>
+      ${scoreHtml}
+      ${latencyHtml}
+    </div>
+    ${msgBlock('🗡️', 'attacker', 'Attacker', round.prompt)}
+    ${msgBlock('🎯', 'target', 'Target', round.response)}
+    ${judgeBlock(round.judge_score, round.judge_reasoning)}
+  `;
+
+  // Expand buttons
+  card.querySelectorAll('.expand-btn').forEach(btn => {
+    btn.onclick = () => {
+      const text = btn.previousElementSibling;
+      text.classList.toggle('collapsed');
+      btn.textContent = text.classList.contains('collapsed') ? '▼ Show more' : '▲ Show less';
+    };
+  });
+
+  return card;
+}
+
+function msgBlock(icon, roleClass, roleLabel, text) {
+  if (!text) return '';
+  const collapsed = text.length > 400 ? 'collapsed' : '';
+  const expandBtn = collapsed ? `<button class="expand-btn">▼ Show more</button>` : '';
+  return `
+    <div class="msg-block">
+      <div class="msg-icon">${icon}</div>
+      <div class="msg-body">
+        <div class="msg-role ${roleClass}">${roleLabel}</div>
+        <div class="msg-text ${collapsed}">${escHtml(text)}</div>
+        ${expandBtn}
+      </div>
+    </div>`;
+}
+
+function judgeBlock(score, reasoning) {
+  if (score == null && !reasoning) return '';
+  const bad = score != null && score >= 8;
+  const scoreTxt = score != null ? `Score ${score}/10` : '';
+  const reasoningHtml = reasoning
+    ? `<div class="judge-reasoning">${escHtml(reasoning)}</div>`
+    : '';
+  return `
+    <div class="msg-block">
+      <div class="msg-icon">⚖️</div>
+      <div class="msg-body">
+        <div class="msg-role judge${bad ? ' bad' : ''}">${scoreTxt ? `Judge — ${scoreTxt}` : 'Judge'}</div>
+        ${reasoningHtml}
+      </div>
+    </div>`;
+}
+
+function buildLoadingCard(nextRoundNum) {
+  const card = document.createElement('div');
+  card.className = 'round-card loading';
+  card.innerHTML = `
+    <div class="round-card-header">
+      <span class="round-num">Round ${nextRoundNum}</span>
+      <span class="phase-badge phase-warmup" style="opacity:.5">…</span>
+      <div class="spinner"></div>
+    </div>
+    <div class="msg-block" style="color:var(--muted);font-size:12px;">
+      <div class="msg-icon" style="opacity:.4">⏳</div>
+      <div class="msg-body"><em>Generating…</em></div>
+    </div>`;
+  return card;
+}
+
+// ── Footer ───────────────────────────────────────────────────
+function updateFooter(state) {
+  const dot  = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  const evalEl = document.getElementById('status-eval');
+  const updEl  = document.getElementById('status-updated');
+
+  if (state.status === 'running') {
+    dot.className = 'status-dot running';
+    text.textContent = 'RUNNING';
+  } else if (state.status === 'completed') {
+    dot.className = 'status-dot live';
+    text.textContent = 'COMPLETED';
+  } else {
+    dot.className = 'status-dot';
+    text.textContent = 'IDLE';
+  }
+
+  evalEl.textContent = state.eval_id ? `· ${state.eval_id}` : '';
+
+  if (state.updated_at) {
+    const d = new Date(state.updated_at);
+    updEl.textContent = `Updated ${d.toLocaleTimeString()}`;
+  } else {
+    updEl.textContent = '—';
+  }
+}
+
+// ── Utilities ────────────────────────────────────────────────
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ============================================================
+// Boot
+// ============================================================
+fetchStateFallback();   // immediate snapshot on page load
+connectSSE();           // then stream updates
+</script>
+</body>
+</html>
